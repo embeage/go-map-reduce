@@ -13,14 +13,15 @@ type TaskArgs struct {
 }
 
 type TaskReply struct {
-	Task     string
-	Number	 int
-	Filename string
-	NReduce  int
+	Task      string
+	MapNumber int
+	Filename  string
+	NReduce   int
 }
 
 type TaskDoneArgs struct {
-	WorkerId uuid.UUID
+	WorkerId  uuid.UUID
+	MapNumber int
 }
 
 type TaskDoneReply struct {
