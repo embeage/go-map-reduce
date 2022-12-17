@@ -6,9 +6,10 @@ package mr
 
 import "os"
 import "strconv"
+import "github.com/satori/go.uuid"
 
 type TaskArgs struct {
-	Worker string
+	WorkerId uuid.UUID
 }
 
 type TaskReply struct {
@@ -17,7 +18,7 @@ type TaskReply struct {
 }
 
 type TaskDoneArgs struct {
-	Worker string
+	WorkerId uuid.UUID
 }
 
 type TaskDoneReply struct {

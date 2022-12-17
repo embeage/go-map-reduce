@@ -7,6 +7,7 @@ import "net/rpc"
 import "net/http"
 import "sync"
 import "time"
+import "github.com/satori/go.uuid"
 
 type Coordinator struct {
 	taskList *taskList
@@ -30,17 +31,17 @@ type task struct {
 	taskType string
 	fileName string
 	assigned time.Time
-	worker   string
+	worker   uuid.UUID
 	done     bool
 }
 
-func (t *task) isMap() bool                     { return t.taskType == "map" }
-func (t *task) isReduce() bool                  { return t.taskType == "reduce" }
-func (t *task) isAssigned() bool                { return t.assigned.IsZero() }
-func (t *task) isAssignedTo(worker string) bool { return t.worker == worker }
-func (t *task) isDone() bool                    { return t.done }
+func (t *task) isMap() bool                        { return t.taskType == "map" }
+func (t *task) isReduce() bool                     { return t.taskType == "reduce" }
+func (t *task) isAssigned() bool                   { return t.assigned.IsZero() }
+func (t *task) isAssignedTo(worker uuid.UUID) bool { return uuid.Equal(t.worker, worker) }
+func (t *task) isDone() bool                       { return t.done }
 func (t *task) unassign() {
-	t.worker = ""
+	t.worker = uuid.UUID{}
 	t.assigned = time.Time{}
 }
 
@@ -58,22 +59,23 @@ func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 			reply.Task = task.taskType
 			reply.FileName = task.fileName
 			task.assigned = time.Now()
-			task.worker = args.Worker
+			task.worker = args.WorkerId
 			return nil
 		}
 	}
 
-	// Return indicator that all tasks busy or done
+	// Reply being empty indicates that there was no tasks
 	return nil
 }
 
 // A worker signals that the task is done
+// When TaskDone and it is a map, add a new Reduce task to the list
 func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	c.taskList.mu.Lock()
 	defer c.taskList.mu.Unlock()
 
 	for _, task := range c.taskList.tasks {
-		if task.isAssignedTo(args.Worker) {
+		if task.isAssignedTo(args.WorkerId) {
 			task.done = true
 			task.unassign()
 			return nil
@@ -126,9 +128,6 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-
-	// Make the split
-	// Create map tasks
 
 	taskList := taskList{
 		tasks: make([]task, 0),

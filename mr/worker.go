@@ -1,9 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"fmt"
+	"github.com/satori/go.uuid"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"time"
+)
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -23,6 +27,30 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	// start a worker
+	id := uuid.NewV4()
+
+	for {
+		fmt.Println("Calling task...")
+		CallTask(id)
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func CallTask(id uuid.UUID) {
+
+	args := TaskArgs{
+		WorkerId: id,
+	}
+
+	reply := TaskReply{}
+
+	ok := call("Coordinator.Task", &args, &reply)
+	if ok {
+		fmt.Println(reply)
+	} else {
+		fmt.Println("Call failed")
+	}
 }
 
 // send an RPC request to the coordinator, wait for the response.
