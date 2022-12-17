@@ -1,16 +1,20 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
-import "sync"
-import "time"
-import "github.com/satori/go.uuid"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+	"time"
+	"github.com/satori/go.uuid"
+)
 
 type Coordinator struct {
-	taskList *taskList
+	taskList     *taskList
+	taskDeadline time.Duration
+	nReduceTasks int
 }
 
 type taskList struct {
@@ -18,6 +22,18 @@ type taskList struct {
 	mu    sync.Mutex
 }
 
+func (tl *taskList) addTask(taskType string, fileName string) {
+	tl.tasks = append(tl.tasks, task{taskType: taskType, fileName: fileName})
+}
+func (tl *taskList) assign(i int, w uuid.UUID, t time.Time) {
+	tl.tasks[i].worker = w
+	tl.tasks[i].assigned = t
+}
+func (tl *taskList) unassign(i int) {
+	tl.tasks[i].worker = uuid.UUID{}
+	tl.tasks[i].assigned = time.Time{}
+}
+func (tl *taskList) setDone(i int) { tl.tasks[i].done = true }
 func (tl *taskList) mappingDone() bool {
 	for _, task := range tl.tasks {
 		if task.isMap() && !task.isDone() {
@@ -40,17 +56,13 @@ func (t *task) isReduce() bool                     { return t.taskType == "reduc
 func (t *task) isAssigned() bool                   { return !t.assigned.IsZero() }
 func (t *task) isAssignedTo(worker uuid.UUID) bool { return uuid.Equal(t.worker, worker) }
 func (t *task) isDone() bool                       { return t.done }
-func (t *task) unassign() {
-	t.worker = uuid.UUID{}
-	t.assigned = time.Time{}
-}
 
 // Give a task to a querying worker
 func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 	c.taskList.mu.Lock()
 	defer c.taskList.mu.Unlock()
 
-	for _, task := range c.taskList.tasks {
+	for i, task := range c.taskList.tasks {
 		if task.isAssigned() || task.isDone() {
 			continue
 		}
@@ -58,8 +70,7 @@ func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 		if task.isMap() || (task.isReduce() && c.taskList.mappingDone()) {
 			reply.Task = task.taskType
 			reply.FileName = task.fileName
-			task.assigned = time.Now()
-			task.worker = args.WorkerId
+			c.taskList.assign(i, args.WorkerId, time.Now())
 			return nil
 		}
 	}
@@ -74,10 +85,10 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	c.taskList.mu.Lock()
 	defer c.taskList.mu.Unlock()
 
-	for _, task := range c.taskList.tasks {
+	for i, task := range c.taskList.tasks {
 		if task.isAssignedTo(args.WorkerId) {
-			task.done = true
-			task.unassign()
+			c.taskList.setDone(i)
+			c.taskList.unassign(i)
 			return nil
 		}
 	}
@@ -90,13 +101,13 @@ func (c *Coordinator) checkTasks() {
 	c.taskList.mu.Lock()
 	defer c.taskList.mu.Unlock()
 
-	for _, task := range c.taskList.tasks {
+	for i, task := range c.taskList.tasks {
 		if task.isAssigned() && !task.isDone() {
 			assignTime := task.assigned
 			currentTime := time.Now()
 			difference := currentTime.Sub(assignTime)
-			if difference.Seconds() > 10 {
-				task.unassign()
+			if difference > c.taskDeadline {
+				c.taskList.unassign(i)
 			}
 		}
 	}
@@ -132,11 +143,30 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	taskList := taskList{
 		tasks: make([]task, 0),
 	}
-
+	
 	c := Coordinator{
-		&taskList,
+		taskList: &taskList,
+		taskDeadline: 10 * time.Second,
+		nReduceTasks: nReduce,
 	}
 
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		for range ticker.C {
+			c.checkTasks()
+		}
+	}()
+
+	c.addMapTasks(files)
 	c.server()
 	return &c
+}
+
+func (c *Coordinator) addMapTasks(files []string) {
+	c.taskList.mu.Lock()
+	defer c.taskList.mu.Unlock()
+
+	for _, file := range files {
+		c.taskList.addTask("map", file)
+	}
 }
