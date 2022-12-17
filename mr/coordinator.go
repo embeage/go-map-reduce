@@ -13,7 +13,8 @@ import (
 
 type task struct {
 	taskType string
-	fileName string
+	number   int
+	filename string
 	assigned time.Time
 	worker   uuid.UUID
 	done     bool
@@ -26,12 +27,22 @@ func (t *task) isAssignedTo(w uuid.UUID) bool { return uuid.Equal(t.worker, w) }
 func (t *task) isDone() bool                  { return t.done }
 
 type taskList struct {
-	tasks []task
-	mu    sync.Mutex
+	tasks       []task
+	mapTasks    int
+	reduceTasks int
+	mu          sync.Mutex
 }
 
-func (tl *taskList) addTask(taskType string, fileName string) {
-	tl.tasks = append(tl.tasks, task{taskType: taskType, fileName: fileName})
+func (tl *taskList) addTask(taskType string, filename string) {
+	var number int
+	if taskType == "map" {
+		number = tl.mapTasks
+		tl.mapTasks++
+	} else {
+		number = tl.reduceTasks
+		tl.reduceTasks++
+	}
+	tl.tasks = append(tl.tasks, task{taskType: taskType, number: number, filename: filename})
 }
 
 func (tl *taskList) assign(i int, w uuid.UUID, t time.Time) {
@@ -80,7 +91,9 @@ func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 
 		if task.isMap() || (task.isReduce() && c.taskList.mappingDone()) {
 			reply.Task = task.taskType
-			reply.FileName = task.fileName
+			reply.Number = task.number
+			reply.Filename = task.filename
+			reply.NReduce = c.nReduceTasks
 			c.taskList.assign(i, args.WorkerId, time.Now())
 			return nil
 		}
