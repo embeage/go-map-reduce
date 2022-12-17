@@ -42,6 +42,12 @@ func (tl *taskList) mappingDone() bool {
 	}
 	return true
 }
+func (tl *taskList) addMapTasks(files []string) {
+
+	for _, file := range files {
+		tl.addTask("map", file)
+	}
+}
 
 type task struct {
 	taskType string
@@ -143,6 +149,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	taskList := taskList{
 		tasks: make([]task, 0),
 	}
+	taskList.addMapTasks(files)
 	
 	c := Coordinator{
 		taskList: &taskList,
@@ -157,16 +164,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		}
 	}()
 
-	c.addMapTasks(files)
 	c.server()
 	return &c
-}
-
-func (c *Coordinator) addMapTasks(files []string) {
-	c.taskList.mu.Lock()
-	defer c.taskList.mu.Unlock()
-
-	for _, file := range files {
-		c.taskList.addTask("map", file)
-	}
 }
