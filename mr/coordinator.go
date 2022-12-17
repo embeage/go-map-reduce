@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"github.com/satori/go.uuid"
 	"log"
 	"net"
 	"net/http"
@@ -8,46 +9,7 @@ import (
 	"os"
 	"sync"
 	"time"
-	"github.com/satori/go.uuid"
 )
-
-type Coordinator struct {
-	taskList     *taskList
-	taskDeadline time.Duration
-	nReduceTasks int
-}
-
-type taskList struct {
-	tasks []task
-	mu    sync.Mutex
-}
-
-func (tl *taskList) addTask(taskType string, fileName string) {
-	tl.tasks = append(tl.tasks, task{taskType: taskType, fileName: fileName})
-}
-func (tl *taskList) assign(i int, w uuid.UUID, t time.Time) {
-	tl.tasks[i].worker = w
-	tl.tasks[i].assigned = t
-}
-func (tl *taskList) unassign(i int) {
-	tl.tasks[i].worker = uuid.UUID{}
-	tl.tasks[i].assigned = time.Time{}
-}
-func (tl *taskList) setDone(i int) { tl.tasks[i].done = true }
-func (tl *taskList) mappingDone() bool {
-	for _, task := range tl.tasks {
-		if task.isMap() && !task.isDone() {
-			return false
-		}
-	}
-	return true
-}
-func (tl *taskList) addMapTasks(files []string) {
-
-	for _, file := range files {
-		tl.addTask("map", file)
-	}
-}
 
 type task struct {
 	taskType string
@@ -57,13 +19,56 @@ type task struct {
 	done     bool
 }
 
-func (t *task) isMap() bool                        { return t.taskType == "map" }
-func (t *task) isReduce() bool                     { return t.taskType == "reduce" }
-func (t *task) isAssigned() bool                   { return !t.assigned.IsZero() }
-func (t *task) isAssignedTo(worker uuid.UUID) bool { return uuid.Equal(t.worker, worker) }
-func (t *task) isDone() bool                       { return t.done }
+func (t *task) isMap() bool                   { return t.taskType == "map" }
+func (t *task) isReduce() bool                { return t.taskType == "reduce" }
+func (t *task) isAssigned() bool              { return !t.assigned.IsZero() }
+func (t *task) isAssignedTo(w uuid.UUID) bool { return uuid.Equal(t.worker, w) }
+func (t *task) isDone() bool                  { return t.done }
 
-// Give a task to a querying worker
+type taskList struct {
+	tasks []task
+	mu    sync.Mutex
+}
+
+func (tl *taskList) addTask(taskType string, fileName string) {
+	tl.tasks = append(tl.tasks, task{taskType: taskType, fileName: fileName})
+}
+
+func (tl *taskList) assign(i int, w uuid.UUID, t time.Time) {
+	tl.tasks[i].worker = w
+	tl.tasks[i].assigned = t
+}
+
+func (tl *taskList) unassign(i int) {
+	tl.tasks[i].worker = uuid.UUID{}
+	tl.tasks[i].assigned = time.Time{}
+}
+
+func (tl *taskList) setDone(i int) {
+	tl.tasks[i].done = true
+}
+
+func (tl *taskList) mappingDone() bool {
+	for _, task := range tl.tasks {
+		if task.isMap() && !task.isDone() {
+			return false
+		}
+	}
+	return true
+}
+func (tl *taskList) addMapTasks(files []string) {
+	for _, file := range files {
+		tl.addTask("map", file)
+	}
+}
+
+type Coordinator struct {
+	taskList     *taskList
+	taskDeadline time.Duration
+	nReduceTasks int
+}
+
+// Coordinator replies with an available task
 func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 	c.taskList.mu.Lock()
 	defer c.taskList.mu.Unlock()
@@ -81,12 +86,11 @@ func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 		}
 	}
 
-	// Reply being empty indicates that there was no tasks
+	// Empty reply indicates no available task
 	return nil
 }
 
-// A worker signals that the task is done
-// When TaskDone and it is a map, add a new Reduce task to the list
+// Coordinator marks task as done and adds reduce task if needed
 func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	c.taskList.mu.Lock()
 	defer c.taskList.mu.Unlock()
@@ -102,7 +106,7 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	return nil
 }
 
-// Periodically check assigned tasks and unassign task
+// Coordinator checks for tasks that haven't been completed in time and unassigns them
 func (c *Coordinator) checkTasks() {
 	c.taskList.mu.Lock()
 	defer c.taskList.mu.Unlock()
@@ -145,14 +149,13 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-
 	taskList := taskList{
 		tasks: make([]task, 0),
 	}
 	taskList.addMapTasks(files)
-	
+
 	c := Coordinator{
-		taskList: &taskList,
+		taskList:     &taskList,
 		taskDeadline: 10 * time.Second,
 		nReduceTasks: nReduce,
 	}
