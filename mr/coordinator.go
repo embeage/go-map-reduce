@@ -75,6 +75,7 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	for _, task := range c.taskList.tasks {
 		if task.isAssignedTo(args.Worker) {
 			task.done = true
+			task.unassign()
 			return nil
 		}
 	}
