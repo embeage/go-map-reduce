@@ -21,7 +21,6 @@ type TaskReply struct {
 
 type TaskDoneArgs struct {
 	WorkerId  uuid.UUID
-	MapNumber int
 }
 
 type TaskDoneReply struct {

@@ -119,7 +119,7 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 			c.taskList.setDone(i)
 			c.taskList.unassign(i)
 			if task.isMap() {
-				c.taskList.addReduceTasks(args.MapNumber, c.nReduce)
+				c.taskList.addReduceTasks(task.mapNumber, c.nReduce)
 			}
 			return nil
 		}
