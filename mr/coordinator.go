@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"github.com/satori/go.uuid"
 	"log"
 	"net"
@@ -14,7 +13,7 @@ import (
 
 type task struct {
 	taskType  string
-	mapNumber int
+	number    int
 	filename  string
 	assigned  time.Time
 	worker    uuid.UUID
@@ -28,20 +27,16 @@ func (t *task) isAssignedTo(w uuid.UUID) bool { return uuid.Equal(t.worker, w) }
 func (t *task) isDone() bool                  { return t.done }
 
 type taskList struct {
-	tasks    []task
-	mapTasks int
-	mu       sync.Mutex
+	tasks        []task
+	mu           sync.Mutex
 }
 
-func (tl *taskList) addMapTask(filename string) {
-	mapNumber := tl.mapTasks
-	tl.mapTasks++
-	tl.tasks = append(tl.tasks, task{taskType: "map", mapNumber: mapNumber, filename: filename})
+func (tl *taskList) addMapTask(i int, filename string) {
+	tl.tasks = append(tl.tasks, task{taskType: "map", filename: filename, number: i})
 }
 
-func (tl *taskList) addReduceTask(mapNumber, reduceNumber int) {
-	filename := fmt.Sprintf("mr-%d-%d", mapNumber, reduceNumber)
-	tl.tasks = append(tl.tasks, task{taskType: "reduce", mapNumber: mapNumber, filename: filename})
+func (tl *taskList) addReduceTask(i int) {
+	tl.tasks = append(tl.tasks, task{taskType: "reduce", number: i})
 }
 
 func (tl *taskList) assign(i int, w uuid.UUID, t time.Time) {
@@ -68,20 +63,21 @@ func (tl *taskList) mappingDone() bool {
 }
 
 func (tl *taskList) addMapTasks(files []string) {
-	for _, file := range files {
-		tl.addMapTask(file)
+	for i, file := range files {
+		tl.addMapTask(i, file)
 	}
 }
 
-func (tl *taskList) addReduceTasks(mapNumber, nReduce int) {
+func (tl *taskList) addReduceTasks(nReduce int) {
 	for i := 0; i < nReduce; i++ {
-		tl.addReduceTask(mapNumber, i)
+		tl.addReduceTask(i)
 	}
 }
 
 type Coordinator struct {
 	taskList     *taskList
 	taskDeadline time.Duration
+	nMap         int
 	nReduce      int
 }
 
@@ -97,8 +93,9 @@ func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 
 		if task.isMap() || (task.isReduce() && c.taskList.mappingDone()) {
 			reply.Task = task.taskType
-			reply.MapNumber = task.mapNumber
 			reply.Filename = task.filename
+			reply.Number = task.number
+			reply.NMap = c.nMap
 			reply.NReduce = c.nReduce
 			c.taskList.assign(i, args.WorkerId, time.Now())
 			return nil
@@ -109,7 +106,7 @@ func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 	return nil
 }
 
-// Coordinator marks task as done and adds reduce task if needed
+// Coordinator marks task as done
 func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 	c.taskList.mu.Lock()
 	defer c.taskList.mu.Unlock()
@@ -118,9 +115,6 @@ func (c *Coordinator) TaskDone(args *TaskDoneArgs, reply *TaskDoneReply) error {
 		if task.isAssignedTo(args.WorkerId) {
 			c.taskList.setDone(i)
 			c.taskList.unassign(i)
-			if task.isMap() {
-				c.taskList.addReduceTasks(task.mapNumber, c.nReduce)
-			}
 			return nil
 		}
 	}
@@ -172,14 +166,15 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	taskList := taskList{
-		tasks:    make([]task, 0),
-		mapTasks: 0,
+		tasks:    []task{},
 	}
 	taskList.addMapTasks(files)
+	taskList.addReduceTasks(nReduce)
 
 	c := Coordinator{
 		taskList:     &taskList,
 		taskDeadline: 10 * time.Second,
+		nMap:		  len(files),
 		nReduce:      nReduce,
 	}
 
