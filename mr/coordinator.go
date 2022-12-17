@@ -29,20 +29,17 @@ func (t *task) isDone() bool                  { return t.done }
 type taskList struct {
 	tasks       []task
 	mapTasks    int
-	reduceTasks int
 	mu          sync.Mutex
 }
 
-func (tl *taskList) addTask(taskType string, filename string) {
-	var number int
-	if taskType == "map" {
-		number = tl.mapTasks
-		tl.mapTasks++
-	} else {
-		number = tl.reduceTasks
-		tl.reduceTasks++
-	}
-	tl.tasks = append(tl.tasks, task{taskType: taskType, number: number, filename: filename})
+func (tl *taskList) addMapTask(filename string) {
+	taskNumber := tl.mapTasks
+	tl.mapTasks++
+	tl.tasks = append(tl.tasks, task{taskType: "map", number: taskNumber, filename: filename})
+}
+
+func (tl *taskList) addReduceTask(taskNumber int, filename string) {
+	tl.tasks = append(tl.tasks, task{taskType: "reduce", number: taskNumber, filename: filename})
 }
 
 func (tl *taskList) assign(i int, w uuid.UUID, t time.Time) {
@@ -69,7 +66,7 @@ func (tl *taskList) mappingDone() bool {
 }
 func (tl *taskList) addMapTasks(files []string) {
 	for _, file := range files {
-		tl.addTask("map", file)
+		tl.addMapTask(file)
 	}
 }
 
