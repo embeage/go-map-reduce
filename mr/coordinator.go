@@ -37,7 +37,7 @@ type task struct {
 
 func (t *task) isMap() bool                        { return t.taskType == "map" }
 func (t *task) isReduce() bool                     { return t.taskType == "reduce" }
-func (t *task) isAssigned() bool                   { return t.assigned.IsZero() }
+func (t *task) isAssigned() bool                   { return !t.assigned.IsZero() }
 func (t *task) isAssignedTo(worker uuid.UUID) bool { return uuid.Equal(t.worker, worker) }
 func (t *task) isDone() bool                       { return t.done }
 func (t *task) unassign() {
