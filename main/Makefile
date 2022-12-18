@@ -1,5 +1,5 @@
 clean:
-	rm -f mr-out*
+	rm -f mr-*
 	rm -f wc.so
 
 build: clean
@@ -7,10 +7,10 @@ build: clean
 
 run_sequential: clean build
 	go run -race mrsequential.go wc.so pg*.txt
-	more mr-out-0
+	cat mr-out-0 | sort | more 
 
-run_coordinator: clean
+run_coordinator: clean build
 	go run -race mrcoordinator.go pg-*.txt
 
-run_worker: clean build
+run_worker:
 	go run -race mrworker.go wc.so	
