@@ -156,9 +156,15 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
+	c.taskList.mu.Lock()
+	defer c.taskList.mu.Unlock()
 
-	return ret
+	for _, task := range c.taskList.tasks {
+		if !task.isDone() {
+			return false
+		}
+	}
+	return true
 }
 
 // create a Coordinator.
