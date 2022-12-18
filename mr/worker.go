@@ -3,225 +3,237 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/satori/go.uuid"
 	"hash/fnv"
 	"io/ioutil"
-	"log"
 	"net/rpc"
 	"os"
-	"time"
 	"sort"
-	"github.com/satori/go.uuid"
+	"time"
 )
 
-// Map functions return a slice of KeyValue.
 type KeyValue struct {
 	Key   string
 	Value string
 }
 
-// for sorting by key.
-type ByKey []KeyValue
-
-// for sorting by key.
-func (a ByKey) Len() int           { return len(a) }
-func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
-
-
-// use ihash(key) % NReduce to choose the reduce
-// task number for each KeyValue emitted by Map.
+// Task number for each KeyValue emitted by Map.
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-// main/mrworker.go calls this function.
+// For sorting keyValue by key.
+type byKey []KeyValue
+
+func (a byKey) Len() int           { return len(a) }
+func (a byKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a byKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
+type worker struct {
+	id      uuid.UUID
+	mapf    func(string, string) []KeyValue
+	reducef func(string, []string) string
+}
+
+func (w *worker) handleMap(task TaskReply) {
+
+	if isS3File(task.Filename) {
+		// Handle S3
+		return
+	}
+
+	f, err := os.Open(task.Filename)
+	if err != nil {
+		ErrorLogger.Fatal(err)
+	}
+	defer f.Close()
+
+	content, err := ioutil.ReadAll(f)
+	if err != nil {
+		ErrorLogger.Fatal(err)
+	}
+
+	// Get the key value pairs from the map function
+	kva := w.mapf(task.Filename, string(content))
+
+	// Open NReduce tmpfiles
+	tmpFiles := make([]*os.File, task.NReduce)
+	for i := 0; i < len(tmpFiles); i++ {
+		tmpFile, err := ioutil.TempFile("", "mrintermediate.")
+		if err != nil {
+			ErrorLogger.Fatal(err)
+		}
+		tmpFiles[i] = tmpFile
+	}
+
+	// Write the kv data into the tmpfiles
+	for _, kv := range kva {
+		// the tmpfile to write into decided by hash of key
+		tmpFile := tmpFiles[ihash(kv.Key)%task.NReduce]
+		enc := json.NewEncoder(tmpFile)
+		err = enc.Encode(&kv)
+		if err != nil {
+			ErrorLogger.Fatal(err)
+		}
+	}
+
+	// Rename the tmpfiles to the completed intermediate files
+	for i, tmpFile := range tmpFiles {
+		tmpFile.Close()
+		filename := fmt.Sprintf("mr-%d-%d", task.Number, i)
+		err = os.Rename(tmpFile.Name(), filename)
+		if err != nil {
+			ErrorLogger.Fatal(err)
+		}
+	}
+}
+
+func (w *worker) handleReduce(task TaskReply) {
+
+	if isS3File(task.Filename) {
+		// Handle S3
+		return
+	}
+
+	intermediate := []KeyValue{}
+
+	// Open all intermediate files for the task
+	for i := 0; i < task.NMap; i++ {
+		filename := fmt.Sprintf("mr-%d-%d", i, task.Number)
+		f, err := os.Open(filename)
+		if err != nil {
+			ErrorLogger.Fatal(err)
+		}
+		defer f.Close()
+
+		// Read the contents of each file into intermediate
+		dec := json.NewDecoder(f)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+	}
+
+	// Sort the intermediate data to align the same keys
+	sort.Sort(byKey(intermediate))
+
+	tmpFile, err := ioutil.TempFile("", "mrout.")
+	if err != nil {
+		ErrorLogger.Fatal(err)
+	}
+	defer tmpFile.Close()
+
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		// Group values of the same key
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+
+		// Call the reduce function on the (now) unique key
+		output := w.reducef(intermediate[i].Key, values)
+
+		// Write the final result for the key value pair into the tmpfile
+		fmt.Fprintf(tmpFile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+
+	// Rename the tmpfile to the completed out file
+	filename := fmt.Sprintf("mr-out-%d", task.Number)
+	err = os.Rename(tmpFile.Name(), filename)
+	if err != nil {
+		ErrorLogger.Fatal(err)
+	}
+}
+
+func (w *worker) callTask() (TaskReply, error) {
+	args := TaskArgs{Worker: w.id}
+	reply := TaskReply{}
+	err := call("Coordinator.Task", &args, &reply)
+	return reply, err
+}
+
+func (w *worker) callTaskDone() error {
+	args := TaskDoneArgs{Worker: w.id}
+	err := call("Coordinator.TaskDone", &args, &Empty{})
+	return err
+}
+
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// start a worker
-	id := uuid.NewV4()
+	InitLogger("worker")
 
+	w := worker{
+		id:      uuid.NewV4(),
+		mapf:    mapf,
+		reducef: reducef,
+	}
+
+	InfoLogger.Printf("Started a worker with UUID %s.\n", w.id)
+
+	// Periodically ask for a task until done
 	for {
-		ok := CallTask(id, mapf, reducef)
-		if !ok {
-			return
-		}
 		time.Sleep(1 * time.Second)
-	}
-}
 
-func CallTask(id uuid.UUID, mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) bool {
-
-	args := TaskArgs{
-		WorkerId: id,
-	}
-
-	reply := TaskReply{}
-
-	ok := call("Coordinator.Task", &args, &reply)
-	if ok {
-		if reply.Task == "map" {
-			handleMap(mapf, reply)
-		} else if reply.Task == "reduce" {
-			handleReduce(reducef, reply)
-		}
-		CallTaskDone(id)
-	} else {
-		return false
-	}
-	return true
-}
-
-func CallTaskDone(id uuid.UUID) {
-
-	args := TaskDoneArgs{
-		WorkerId: id,
-	}
-
-	reply := TaskDoneReply{}
-
-	ok := call("Coordinator.TaskDone", &args, &reply)
-	if ok {
-	} else {
-	}
-}
-
-func handleMap(mapf func(string, string) []KeyValue, task TaskReply) {
-	// check if s3 path or local
-	intermediate := []KeyValue{}
-
-	if isS3File(task.Filename) {
-	} else {
-		f, err := os.Open(task.Filename)
+		reply, err := w.callTask()
 		if err != nil {
-			fmt.Println(err)
-			return
+			InfoLogger.Printf("Calling task returned error: %s. Assuming done.\n", err)
+			break
 		}
-		defer f.Close()
-		content, err := ioutil.ReadAll(f)
+
+		switch reply.TaskType {
+		case Map:
+			InfoLogger.Printf("Received map task %d, handling...\n", reply.Number)
+			w.handleMap(reply)
+		case Reduce:
+			InfoLogger.Printf("Received reduce task %d, handling...\n", reply.Number)
+			w.handleReduce(reply)
+		default:
+			InfoLogger.Println("No tasks available.")
+			continue
+		}
+
+		InfoLogger.Println("Done.")
+
+		err = w.callTaskDone()
 		if err != nil {
-			fmt.Printf("cannot read %v\n", task.Filename)
-			return
-		}
-		kva := mapf(task.Filename, string(content))
-		intermediate = append(intermediate, kva...)
-
-		tmpFiles := make([]*os.File, task.NReduce)
-		for i := 0; i < len(tmpFiles); i++ {
-			tmpFile, err := ioutil.TempFile("", "")
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-			tmpFiles[i] = tmpFile
-		}
-
-		for _, kv := range intermediate {
-			// Make sure same words go in same reduce file, ihash
-			tmpFile := tmpFiles[ihash(kv.Key)%task.NReduce]
-			enc := json.NewEncoder(tmpFile)
-			err = enc.Encode(&kv)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-		}
-
-		for i, tmpFile := range tmpFiles {
-			tmpFile.Close()
-			// Atomically rename file
-			filename := fmt.Sprintf("mr-%d-%d", task.Number, i)
-			err = os.Rename(tmpFile.Name(), filename)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
+			WarningLogger.Printf("Calling task done returned error: %s. "+
+				"This should not happen unless the worker timed out.\n", err)
+			break
 		}
 	}
 }
 
-func handleReduce(reducef func(string, []string) string, task TaskReply) {
-	if isS3File(task.Filename) {
+// Send an RPC request to the coordinator, wait for the response.
+func call(rpcname string, args interface{}, reply interface{}) error {
 
+	var client *rpc.Client
+	var err error
+
+	if TCP {
+		client, err = rpc.DialHTTP("tcp", CoordinatorIP+":"+CoordinatorPort)
 	} else {
-
-		intermediate := []KeyValue{}
-
-		// Open all files with the correct reduce number
-		for i := 0; i < task.NMap; i++ {
-			f, err := os.Open(fmt.Sprintf("mr-%d-%d", i, task.Number))
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-			defer f.Close()
-			dec := json.NewDecoder(f)
-			for {
-				var kv KeyValue
-				if err := dec.Decode(&kv); err != nil {
-					break
-				}
-				intermediate = append(intermediate, kv)
-	
-			}
-		}
-
-		sort.Sort(ByKey(intermediate))
-
-		tmpFile, err := ioutil.TempFile("", "")
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		defer tmpFile.Close()
-
-		i := 0
-		for i < len(intermediate) {
-			j := i + 1
-			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-				j++
-			}
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, intermediate[k].Value)
-			}
-			output := reducef(intermediate[i].Key, values)
-
-			// this is the correct format for each line of Reduce output.
-			fmt.Fprintf(tmpFile, "%v %v\n", intermediate[i].Key, output)
-	
-			i = j
-		}
-		outFilename := fmt.Sprintf("mr-out-%d", task.Number)
-		err = os.Rename(tmpFile.Name(), outFilename)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
+		sockname := coordinatorSock()
+		client, err = rpc.DialHTTP("unix", sockname)
 	}
-}
 
-// send an RPC request to the coordinator, wait for the response.
-// usually returns true.
-// returns false if something goes wrong.
-func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := coordinatorSock()
-	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		return false
-		log.Fatal("dialing:", err)
+		return err
 	}
-	defer c.Close()
+	defer client.Close()
 
-	err = c.Call(rpcname, args, reply)
-	if err == nil {
-		return true
-	}
-
-	fmt.Println(err)
-	return false
+	err = client.Call(rpcname, args, reply)
+	return err
 }
