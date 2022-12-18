@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"github.com/satori/go.uuid"
 	"log"
 	"net"
 	"net/http"
@@ -9,10 +8,11 @@ import (
 	"os"
 	"sync"
 	"time"
+	"github.com/satori/go.uuid"
 )
 
 type task struct {
-	taskType  string
+	taskType  int
 	number    int
 	filename  string
 	assigned  time.Time
@@ -20,8 +20,8 @@ type task struct {
 	done      bool
 }
 
-func (t *task) isMap() bool                   { return t.taskType == "map" }
-func (t *task) isReduce() bool                { return t.taskType == "reduce" }
+func (t *task) isMap() bool                   { return t.taskType == Map }
+func (t *task) isReduce() bool                { return t.taskType == Reduce }
 func (t *task) isAssigned() bool              { return !t.assigned.IsZero() }
 func (t *task) isAssignedTo(w uuid.UUID) bool { return uuid.Equal(t.worker, w) }
 func (t *task) isDone() bool                  { return t.done }
@@ -31,12 +31,12 @@ type taskList struct {
 	mu           sync.Mutex
 }
 
-func (tl *taskList) addMapTask(i int, filename string) {
-	tl.tasks = append(tl.tasks, task{taskType: "map", filename: filename, number: i})
+func (tl *taskList) addMapTask(n int, filename string) {
+	tl.tasks = append(tl.tasks, task{taskType: Map, number: n, filename: filename})
 }
 
-func (tl *taskList) addReduceTask(i int) {
-	tl.tasks = append(tl.tasks, task{taskType: "reduce", number: i})
+func (tl *taskList) addReduceTask(n int) {
+	tl.tasks = append(tl.tasks, task{taskType: Reduce, number: n})
 }
 
 func (tl *taskList) assign(i int, w uuid.UUID, t time.Time) {
@@ -92,7 +92,7 @@ func (c *Coordinator) Task(args *TaskArgs, reply *TaskReply) error {
 		}
 
 		if task.isMap() || (task.isReduce() && c.taskList.mappingDone()) {
-			reply.Task = task.taskType
+			reply.TaskType = task.taskType
 			reply.Filename = task.filename
 			reply.Number = task.number
 			reply.NMap = c.nMap
@@ -129,10 +129,7 @@ func (c *Coordinator) checkTasks() {
 
 	for i, task := range c.taskList.tasks {
 		if task.isAssigned() && !task.isDone() {
-			assignTime := task.assigned
-			currentTime := time.Now()
-			difference := currentTime.Sub(assignTime)
-			if difference > c.taskDeadline {
+			if time.Since(task.assigned) > c.taskDeadline {
 				c.taskList.unassign(i)
 			}
 		}

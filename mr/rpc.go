@@ -13,9 +13,9 @@ type TaskArgs struct {
 }
 
 type TaskReply struct {
-	Task     string
-	Filename string
+	TaskType int
 	Number   int
+	Filename string
 	NMap     int
 	NReduce  int
 }
