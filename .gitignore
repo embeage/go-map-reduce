@@ -8,3 +8,4 @@ mrtmp.*
 /main/mrcoordinator
 /main/mrsequential
 /main/mrworker
+.env

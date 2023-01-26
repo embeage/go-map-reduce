@@ -35,16 +35,17 @@ type worker struct {
 	id      uuid.UUID
 	mapf    func(string, string) []KeyValue
 	reducef func(string, []string) string
+	bucket  *s3Bucket
 }
 
 func (w *worker) handleMap(task TaskReply) {
-
-	if isS3File(task.Filename) {
-		// Handle S3
-		return
+	var f *os.File
+	var err error
+	if UseS3 {
+		f, err = w.bucket.downloadFile(task.Filename)
+	} else {
+		f, err = os.Open(task.Filename)
 	}
-
-	f, err := os.Open(task.Filename)
 	if err != nil {
 		ErrorLogger.Fatal(err)
 	}
@@ -84,6 +85,9 @@ func (w *worker) handleMap(task TaskReply) {
 		tmpFile.Close()
 		filename := fmt.Sprintf("mr-%d-%d", task.Number, i)
 		err = os.Rename(tmpFile.Name(), filename)
+		if UseS3 {
+			err = w.bucket.uploadFile(filename)
+		}
 		if err != nil {
 			ErrorLogger.Fatal(err)
 		}
@@ -91,18 +95,18 @@ func (w *worker) handleMap(task TaskReply) {
 }
 
 func (w *worker) handleReduce(task TaskReply) {
-
-	if isS3File(task.Filename) {
-		// Handle S3
-		return
-	}
-
 	intermediate := []KeyValue{}
 
 	// Open all intermediate files for the task
 	for i := 0; i < task.NMap; i++ {
 		filename := fmt.Sprintf("mr-%d-%d", i, task.Number)
-		f, err := os.Open(filename)
+		var f *os.File
+		var err error
+		if UseS3 {
+			f, err = w.bucket.downloadFile(filename)
+		} else {
+			f, err = os.Open(filename)
+		}
 		if err != nil {
 			ErrorLogger.Fatal(err)
 		}
@@ -152,6 +156,9 @@ func (w *worker) handleReduce(task TaskReply) {
 	// Rename the tmpfile to the completed out file
 	filename := fmt.Sprintf("mr-out-%d", task.Number)
 	err = os.Rename(tmpFile.Name(), filename)
+	if UseS3 {
+		err = w.bucket.uploadFile(filename)
+	}
 	if err != nil {
 		ErrorLogger.Fatal(err)
 	}
@@ -180,8 +187,12 @@ func Worker(mapf func(string, string) []KeyValue,
 		mapf:    mapf,
 		reducef: reducef,
 	}
-
+	
 	InfoLogger.Printf("Started a worker with UUID %s.\n", w.id)
+
+	if UseS3 {
+		w.bucket = newS3Bucket(Region, Bucket)
+	}
 
 	// Periodically ask for a task until done
 	for {

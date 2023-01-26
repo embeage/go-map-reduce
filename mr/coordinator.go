@@ -89,6 +89,7 @@ type Coordinator struct {
 	nMap         int
 	nReduce      int
 	done         chan bool
+	bucket       *s3Bucket
 }
 
 // Coordinator replies with an available task
@@ -188,6 +189,11 @@ func (c *Coordinator) Done() bool {
 	}
 
 	InfoLogger.Println("Job finished.")
+
+	if UseS3 {
+		// Download the finished files.
+	}
+
 	c.done <- true
 	return true
 }
@@ -210,6 +216,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		nMap:         len(files),
 		nReduce:      nReduce,
 		done:         done,
+	}
+
+	if UseS3 {
+		c.bucket = newS3Bucket(Region, Bucket)
+		c.bucket.removeFiles()
+		for _, filename := range files {
+			c.bucket.uploadFile(filename)
+		}
 	}
 
 	go func() {
